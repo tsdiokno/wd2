@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Terrain Walker | Smart Directions</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="map"></div>
+
+    <div class="search-panel">
+        <div class="input-group">
+            <div class="icon start-icon"></div>
+            <input type="text" id="input-start" placeholder="Choose starting point..." autocomplete="off">
+            <button id="btn-my-location" class="icon-btn" title="Use Current Location">📍</button>
+            <div id="autocomplete-start" class="autocomplete-list"></div>
+        </div>
+        
+        <div class="swap-container">
+            <button id="btn-swap" class="icon-btn swap-btn" title="Swap">⇅</button>
+        </div>
+
+        <div class="input-group">
+            <div class="icon end-icon"></div>
+            <input type="text" id="input-end" placeholder="Choose destination..." autocomplete="off">
+            <div id="autocomplete-end" class="autocomplete-list"></div>
+        </div>
+    </div>
+
+    <div id="bottom-sheet" class="bottom-sheet hidden">
+        <div id="sheet-toggle" class="handle-zone" title="Tap to toggle">
+            <div class="drag-handle"></div>
+        </div>
+        <div class="sheet-content">
+            <div id="loading-state" class="hidden">
+                <p>Analyzing route and elevation data...</p>
+            </div>
+            
+            <div id="route-details" class="hidden">
+                <div class="section-card">
+                    <h3>About Your Route</h3>
+                    <p id="ui-about-route" class="summary-text">--</p>
+                    
+                    <div class="time-breakdown">
+                        <h4>Time Breakdown Estimate</h4>
+                        <div class="breakdown-row">
+                            <span>Flat-ground estimate:</span>
+                            <span id="bd-base">-- min</span>
+                        </div>
+                        <div class="breakdown-row">
+                            <span>Elevation adjustment:</span>
+                            <span id="bd-elev" class="penalty">-- min</span>
+                        </div>
+                        <div class="breakdown-row">
+                            <span>Sustained climbing adjustment:</span>
+                            <span id="bd-climb" class="penalty">-- min</span>
+                        </div>
+                        <div class="breakdown-row">
+                            <span>Gentle downhill recovery:</span>
+                            <span id="bd-recovery" class="bonus">-- min</span>
+                        </div>
+                        <div class="breakdown-row">
+                            <span>Fatigue adjustment:</span>
+                            <span id="bd-fatigue" class="penalty">-- min</span>
+                        </div>
+                        <div class="breakdown-row total-row">
+                            <span>Final walking estimate:</span>
+                            <span id="bd-total">-- min</span>
+                        </div>
+                    </div>
+                    
+                    <p class="confidence-note">
+                        <strong>Note on Confidence:</strong> This estimate is generated using physiological heuristics (based on Tobler and Naismith models). It assumes an average healthy adult under normal conditions. Factors such as weather, individual fitness, terrain surface, and carried load will affect actual travel time.
+                    </p>
+                </div>
+
+                <div class="section-card">
+                    <h3>Estimated Calories Burned</h3>
+                    <p class="calories-val">≈ <span id="ui-calories">--</span> kcal</p>
+                    <p class="disclaimer">*Estimated using average adult body weight (70kg) and calculated walking intensity based on terrain grade. Actual values will vary.</p>
+                </div>
+                <div class="action-container">
+                    <button id="btn-gmaps" class="primary-btn">
+                        <span class="btn-icon">🧭</span> Start Live Navigation
+                    </button>
+                    <p class="gmaps-note">Opens in Google Maps app</p>
+                </div>
+            </div>
+            
+            <div id="error-state" class="hidden">
+                <p id="ui-error-message">Unable to calculate route.</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    
+    <script type="module" src="js/app.js?v=6e7df67"></script>
+</body>
+</html>
