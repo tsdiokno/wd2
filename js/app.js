@@ -152,16 +152,24 @@ function setupAutocomplete(inputEl, listEl, type) {
 }
 
 function updateLocation(type, data) {
+    // 1. Save the new location to our application state
     state[type] = data;
+    
+    // 2. Figure out which text box to update
     const inputEl = type === 'start' ? els.inputStart : els.inputEnd;
     
     if (data) {
+        // 3. Update the text box with the location name
         inputEl.value = data.label;
-        mapManager.setMarker(type, data, handleMarkerDrag);
+        
+        // 4. Safely pass the coordinates to map.js to draw the pin
+        mapManager.setMarker(type, data.lat, data.lng);
     } else {
+        // If data is null (e.g., clearing the input), empty the text box
         inputEl.value = '';
     }
 
+    // 5. Run the routing engine
     calculateRoute();
 }
 
