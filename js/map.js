@@ -2,7 +2,7 @@ export class MapManager {
     constructor(containerId) {
         this.map = new maplibregl.Map({
             container: containerId,
-            // Swap the demo tiles for MapTiler's gorgeous street map
+            // MapTiler's street map
             style: 'https://api.maptiler.com/maps/streets-v2/style.json?key=ohKQ0BopPAxViKTMGueU', 
             center: [120.98, 14.70], // Centered near Valenzuela
             zoom: 15,
@@ -12,8 +12,40 @@ export class MapManager {
         
         this.liveMarker = null;
         this.markers = {};
-    }
 
+        // 1. Navigation State Variable (2-mode system)
+        this.trackingMode = 'free'; // 'free' or 'heading-up'
+        this.watchId = null;
+
+        // 2. Compass Device Orientation Listener
+        window.addEventListener('deviceorientation', (e) => {
+            if (this.trackingMode !== 'heading-up') return;
+
+            let heading = e.webkitCompassHeading;
+            if (heading === undefined && e.alpha !== null) {
+                heading = Math.abs(e.alpha - 360);
+            }
+
+            if (heading !== undefined) {
+                this.map.easeTo({
+                    bearing: heading,
+                    duration: 100, // Short duration for responsive real-time turning
+                    easing: (t) => t
+                });
+            }
+        });
+
+        // 3. Gesture Interceptors: Drops lock back to 'free' if user drags or spins map manually
+        const breakLock = () => {
+            if (this.trackingMode === 'heading-up') {
+                this.setTrackingMode('free');
+                window.dispatchEvent(new Event('tracking-broken')); 
+            }
+        };
+
+        this.map.on('dragstart', breakLock);
+        this.map.on('rotatestart', breakLock);
+    }
 
     onClick(callback) {
         this.map.on('click', (e) => {
@@ -42,65 +74,93 @@ export class MapManager {
             .addTo(this.map);
     }
 
-    // Clears the current route line from the map
+    // Clears the route by emptying the data, rather than destroying the WebGL layer
     clearRoute() {
-        if (this.map.getSource('route-source')) {
-            this.map.removeLayer('route-layer');
-            this.map.removeSource('route-source');
+        const source = this.map.getSource('route-source');
+        if (source) {
+            // Feed it an empty GeoJSON object to make the line instantly disappear
+            source.setData({
+                type: 'FeatureCollection',
+                features: []
+            });
         }
     }
 
-    // Draws the new route line and zooms the map to fit it
+    // Hot-swaps new route data into the existing GPU pipeline
     drawRoute(geometry) {
-        this.clearRoute(); // Always clear the old route first
+        const source = this.map.getSource('route-source');
+        
+        if (source) {
+            // 🚀 LIGHTNING FAST: The layer exists, just pipe new data to it
+            source.setData(geometry);
+        } else {
+            // FIRST TIME ONLY: Set up the WebGL source and layer
+            this.map.addSource('route-source', {
+                'type': 'geojson',
+                'data': geometry 
+            });
 
-        // 1. Add the raw coordinate data to the map
-        this.map.addSource('route-source', {
-            'type': 'geojson',
-            'data': geometry 
-        });
-
-        // 2. Tell the map how to visually style that data
-        this.map.addLayer({
-            'id': 'route-layer',
-            'type': 'line',
-            'source': 'route-source',
-            'layout': {
-                'line-join': 'round',
-                'line-cap': 'round'
-            },
-            'paint': {
-                'line-color': '#007AFF', // iOS Blue
-                'line-width': 5,
-                'line-opacity': 0.8
-            }
-        });
-
-        // Optional: Zoom map to fit route in MapLibre
-        // Note: Requires turf.js or calculating bounding box manually for MapLibre
+            this.map.addLayer({
+                'id': 'route-layer',
+                'type': 'line',
+                'source': 'route-source',
+                'layout': {
+                    'line-join': 'round',
+                    'line-cap': 'round'
+                },
+                'paint': {
+                    'line-color': '#007AFF',
+                    'line-width': 5,
+                    'line-opacity': 0.8
+                }
+            });
+        }
     }
 
     /**
-     * Updates the map tracking perspective smoothly using the device compass
+     * Toggles tracking mechanics, view pitch, and clears streams when dropped
      */
-    updateNavigationPerspective(lat, lng, heading) {
-        // Move the marker location
+    setTrackingMode(mode) {
+        this.trackingMode = mode;
+
+        if (mode === 'heading-up') {
+            // Apply a slight tilt for forward perspective visibility
+            this.map.easeTo({ pitch: 45, duration: 500 });
+        } else if (mode === 'free') {
+            // Turn off GPS watch tracker to save battery
+            if (this.watchId) {
+                navigator.geolocation.clearWatch(this.watchId);
+                this.watchId = null;
+            }
+            // Restore a flat standard 2D perspective
+            this.map.easeTo({ pitch: 0, duration: 500 });
+        }
+    }
+
+    /**
+     * Dedicated live tracking target updater. Handles camera focus transitions.
+     */
+    updateLivePosition(lat, lng) {
         if (!this.liveMarker) {
-            this.liveMarker = new maplibregl.Marker()
+            // Distinct user localization dot layout
+            const el = document.createElement('div');
+            el.style.width = '16px';
+            el.style.height = '16px';
+            el.style.backgroundColor = '#007AFF';
+            el.style.borderRadius = '50%';
+            el.style.border = '2px solid white';
+            el.style.boxShadow = '0 0 6px rgba(0,0,0,0.4)';
+
+            this.liveMarker = new maplibregl.Marker({ element: el })
                 .setLngLat([lng, lat])
                 .addTo(this.map);
         } else {
             this.liveMarker.setLngLat([lng, lat]);
         }
 
-        // The core navigation magic:
-        // Automatically smoothly spins the entire map grid underneath the user 
-        // while the engine dynamically forces all street text to stay right-side up.
-        this.map.easeTo({
-            center: [lng, lat],
-            bearing: heading, // Set the map rotation to match user heading
-            duration: 200,    // Smooth out micro-jitters over 200ms
-            easing: (t) => t  // Linear easing for fluid real-time movement
-        });
+        // Lock map frame center over coordinates exclusively when Heading-Up tracking is operational
+        if (this.trackingMode === 'heading-up') {
+            this.map.panTo([lng, lat], { duration: 800 });
+        }
     }
 }

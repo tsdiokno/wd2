@@ -24,20 +24,132 @@ const els = {
     sheetToggle: document.getElementById('sheet-toggle')
 };
 
+// 1. Add this variable near the top of app.js (under state and els)
+let currentRouteController = null;
+
+async function calculateRoute() {
+    if (!state.start?.lat || !state.end?.lat) {
+        els.bottomSheet.classList.add('hidden');
+        mapManager.clearRoute();
+        return; 
+    }
+
+    // 2. Kill the previous API request if it's still running
+    if (currentRouteController) {
+        currentRouteController.abort(); 
+    }
+    // Create a new kill-switch for THIS specific request
+    currentRouteController = new AbortController();
+
+    showSheetState('loading');
+    
+    try {
+        // 3. Pass the signal to your API function 
+        // (You will need to update api.js to accept this signal in its fetch call!)
+        const data = await getRoute(state.start, state.end, currentRouteController.signal);
+        
+        if (!data.features || data.features.length === 0) {
+            throw new Error("No viable routes found.");
+        }
+
+        let bestRouteGeometry = null;
+        let bestStats = null;
+        let lowestTime = Infinity;
+
+        // 2. Evaluate every route feature returned by ORS
+        for (const feature of data.features) {
+            const coordinates = feature.geometry.coordinates; 
+            const distanceMeters = feature.properties.summary.distance;
+
+            // Map ORS 3D coordinate arrays [lng, lat, elev] into our required object structure
+            const elevationData = coordinates.map(coord => ({
+                lng: coord[0],
+                lat: coord[1],
+                // If ORS drops elevation data for any reason, safely default to 0 (flat)
+                elevation: coord.length > 2 ? coord[2] : 0 
+            }));
+
+            // 3. Run the physiological model
+            const stats = analyzeTerrainRoute(elevationData, distanceMeters);
+
+            // 4. Optimization: Keep only the physically fastest path
+            if (stats.finalTimeMin < lowestTime) {
+                lowestTime = stats.finalTimeMin;
+                bestStats = stats;
+                bestRouteGeometry = feature.geometry;
+            }
+        }
+
+        if (!bestRouteGeometry) {
+            throw new Error("Failed to evaluate route paths.");
+        }
+
+        // 5. Draw the most efficient route & Update UI
+        mapManager.drawRoute(bestRouteGeometry);
+        updateRouteUI(bestStats);
+        showSheetState('details');
+
+        // --- NEW GMAPS INTEGRATION ---
+        const gmapsBtn = document.getElementById('btn-gmaps');
+        if (gmapsBtn) {
+            // Remove any old event listeners by cloning the button (cleanest vanilla JS approach)
+            const newBtn = gmapsBtn.cloneNode(true);
+            gmapsBtn.parentNode.replaceChild(newBtn, gmapsBtn);
+            
+            // Add the fresh listener with the current route's geometry
+            newBtn.addEventListener('click', () => {
+                openInGoogleMaps(state.start, state.end, bestRouteGeometry);
+            });
+        }
+
+    } catch (error) {
+        // 4. Ignore errors that were caused by us intentionally aborting the fetch
+        if (error.name === 'AbortError') {
+            console.log("Previous route calculation cancelled.");
+            return; 
+        }
+
+        console.error("Routing Error:", error);
+        if (els.errorMsg) {
+            // Check if the error message contains our specific ORS limit error
+            if (error.message.includes("2004") || error.message.includes("exceed the limits")) {
+                els.errorMsg.textContent = "These locations are too far apart to calculate a walking route.";
+            } else {
+                els.errorMsg.textContent = "Route not found or unable to cross terrain.";
+            }
+        }
+        showSheetState('error');
+    }
+}
+
 const mapManager = new MapManager('map');
 
 function init() {
     setupEventListeners();
     
     // Map tap assignment (sets start if empty, else end)
-    mapManager.onClick((e) => {
-        const { lat, lng } = e.latlng;
+    mapManager.onClick((lat, lng) => {
+        // Now it perfectly catches the two numbers sent by map.js!
         if (!state.start) {
             updateLocation('start', { lat, lng, label: 'Dropped Pin (Start)' });
         } else if (!state.end) {
             updateLocation('end', { lat, lng, label: 'Dropped Pin (End)' });
         }
     });
+}
+
+// Helper function for iOS Compass Permission
+async function requestCompassPermission() {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try {
+            const permission = await DeviceOrientationEvent.requestPermission();
+            return permission === 'granted';
+        } catch (error) {
+            console.error("Compass tracking error:", error);
+            return false;
+        }
+    }
+    return true; // Android/Desktop doesn't require explicit popup
 }
 
 function setupEventListeners() {
@@ -47,23 +159,63 @@ function setupEventListeners() {
         updateLocation('end', temp);
     });
 
-    els.btnMyLoc.addEventListener('click', () => {
-        if (navigator.geolocation) {
-            els.inputStart.value = "Locating...";
-            navigator.geolocation.getCurrentPosition(
-                (pos) => {
-                    updateLocation('start', {
-                        lat: pos.coords.latitude,
-                        lng: pos.coords.longitude,
-                        label: 'My Location'
-                    });
-                },
-                (err) => {
-                    console.warn("Geolocation denied or failed.", err);
-                    alert("Unable to retrieve location. Please check your browser permissions.");
-                    els.inputStart.value = state.start ? state.start.label : "";
-                }
-            );
+    // Reset button styles if user manually breaks the tracking lock by dragging map
+    window.addEventListener('tracking-broken', () => {
+        els.btnMyLoc.style.backgroundColor = ""; 
+        els.btnMyLoc.style.color = "";
+    });
+
+    // 2-Mode My Location Toggle
+    els.btnMyLoc.addEventListener('click', async () => {
+        if (mapManager.trackingMode === 'free') {
+            // TURN NAVIGATION MODE ON
+            const hasCompassAccess = await requestCompassPermission();
+            if (!hasCompassAccess) return;
+
+            mapManager.setTrackingMode('heading-up');
+            els.btnMyLoc.style.backgroundColor = "#007AFF"; 
+            els.btnMyLoc.style.color = "#FFF";
+            
+            // ACTION 1: THE ROUTING ENGINE (Runs exactly once)
+            // Grab a single, static coordinate to calculate the route.
+            if (!state.start || state.start.label !== "Live Tracking...") {
+                els.inputStart.value = "Locating...";
+                
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => {
+                        // This updates the UI and fires calculateRoute() exactly once.
+                        updateLocation('start', { 
+                            lat: pos.coords.latitude, 
+                            lng: pos.coords.longitude, 
+                            label: 'Live Tracking...' 
+                        });
+                    },
+                    (err) => {
+                        console.warn("Static location error:", err);
+                        els.inputStart.value = state.start ? state.start.label : "";
+                    },
+                    { enableHighAccuracy: true }
+                );
+            }
+
+            // ACTION 2: THE VISUAL TRACKER (Runs entirely client-side)
+            // This stream ONLY moves the blue dot. It never touches the API.
+            if (navigator.geolocation) {
+                mapManager.watchId = navigator.geolocation.watchPosition(
+                    (pos) => {
+                        // Just push the coordinates directly to the MapLibre canvas
+                        mapManager.updateLivePosition(pos.coords.latitude, pos.coords.longitude);
+                    },
+                    (err) => console.warn("Live tracking error:", err),
+                    { enableHighAccuracy: true, maximumAge: 0 }
+                );
+            }
+
+        } else {
+            // TURN NAVIGATION MODE OFF
+            mapManager.setTrackingMode('free');
+            els.btnMyLoc.style.backgroundColor = ""; 
+            els.btnMyLoc.style.color = "";
         }
     });
 
@@ -184,92 +336,91 @@ function handleMarkerDrag(type, latLng) {
     calculateRoute();
 }
 
-async function calculateRoute() {
-    // Guard clause: Prevent running if either point is missing
-    if (!state.start?.lat || !state.end?.lat) {
-        els.bottomSheet.classList.add('hidden');
-        mapManager.clearRoute();
-        return; 
-    }
+// async function calculateRoute() {
+//     // Guard clause: Prevent running if either point is missing
+//     if (!state.start?.lat || !state.end?.lat) {
+//         els.bottomSheet.classList.add('hidden');
+//         mapManager.clearRoute();
+//         return; 
+//     }
 
-    showSheetState('loading');
+//     showSheetState('loading');
     
-    try {
-        // 1. Get multiple route options from ORS
-        const data = await getRoute(state.start, state.end);
+//     try {
+//         // 1. Get multiple route options from ORS
+//         const data = await getRoute(state.start, state.end);
         
-        if (!data.features || data.features.length === 0) {
-            throw new Error("No viable routes found.");
-        }
+//         if (!data.features || data.features.length === 0) {
+//             throw new Error("No viable routes found.");
+//         }
 
-        let bestRouteGeometry = null;
-        let bestStats = null;
-        let lowestTime = Infinity;
+//         let bestRouteGeometry = null;
+//         let bestStats = null;
+//         let lowestTime = Infinity;
 
-        // 2. Evaluate every route feature returned by ORS
-        for (const feature of data.features) {
-            const coordinates = feature.geometry.coordinates; 
-            const distanceMeters = feature.properties.summary.distance;
+//         // 2. Evaluate every route feature returned by ORS
+//         for (const feature of data.features) {
+//             const coordinates = feature.geometry.coordinates; 
+//             const distanceMeters = feature.properties.summary.distance;
 
-            // Map ORS 3D coordinate arrays [lng, lat, elev] into our required object structure
-            const elevationData = coordinates.map(coord => ({
-                lng: coord[0],
-                lat: coord[1],
-                // If ORS drops elevation data for any reason, safely default to 0 (flat)
-                elevation: coord.length > 2 ? coord[2] : 0 
-            }));
+//             // Map ORS 3D coordinate arrays [lng, lat, elev] into our required object structure
+//             const elevationData = coordinates.map(coord => ({
+//                 lng: coord[0],
+//                 lat: coord[1],
+//                 // If ORS drops elevation data for any reason, safely default to 0 (flat)
+//                 elevation: coord.length > 2 ? coord[2] : 0 
+//             }));
 
-            // 3. Run the physiological model
-            const stats = analyzeTerrainRoute(elevationData, distanceMeters);
+//             // 3. Run the physiological model
+//             const stats = analyzeTerrainRoute(elevationData, distanceMeters);
 
-            // 4. Optimization: Keep only the physically fastest path
-            if (stats.finalTimeMin < lowestTime) {
-                lowestTime = stats.finalTimeMin;
-                bestStats = stats;
-                bestRouteGeometry = feature.geometry;
-            }
-        }
+//             // 4. Optimization: Keep only the physically fastest path
+//             if (stats.finalTimeMin < lowestTime) {
+//                 lowestTime = stats.finalTimeMin;
+//                 bestStats = stats;
+//                 bestRouteGeometry = feature.geometry;
+//             }
+//         }
 
-        if (!bestRouteGeometry) {
-            throw new Error("Failed to evaluate route paths.");
-        }
+//         if (!bestRouteGeometry) {
+//             throw new Error("Failed to evaluate route paths.");
+//         }
 
-        // 5. Draw the most efficient route & Update UI
-        mapManager.drawRoute(bestRouteGeometry);
-        updateRouteUI(bestStats);
-        showSheetState('details');
+//         // 5. Draw the most efficient route & Update UI
+//         mapManager.drawRoute(bestRouteGeometry);
+//         updateRouteUI(bestStats);
+//         showSheetState('details');
 
-        // --- NEW GMAPS INTEGRATION ---
-        const gmapsBtn = document.getElementById('btn-gmaps');
-        if (gmapsBtn) {
-            // Remove any old event listeners by cloning the button (cleanest vanilla JS approach)
-            const newBtn = gmapsBtn.cloneNode(true);
-            gmapsBtn.parentNode.replaceChild(newBtn, gmapsBtn);
+//         // --- NEW GMAPS INTEGRATION ---
+//         const gmapsBtn = document.getElementById('btn-gmaps');
+//         if (gmapsBtn) {
+//             // Remove any old event listeners by cloning the button (cleanest vanilla JS approach)
+//             const newBtn = gmapsBtn.cloneNode(true);
+//             gmapsBtn.parentNode.replaceChild(newBtn, gmapsBtn);
             
-            // Add the fresh listener with the current route's geometry
-            newBtn.addEventListener('click', () => {
-                openInGoogleMaps(state.start, state.end, bestRouteGeometry);
-            });
-        }
+//             // Add the fresh listener with the current route's geometry
+//             newBtn.addEventListener('click', () => {
+//                 openInGoogleMaps(state.start, state.end, bestRouteGeometry);
+//             });
+//         }
 
-    } catch (error) {
-        console.error("Routing Error:", error);
-        if (els.errorMsg) {
-            // Check if the error message contains our specific ORS limit error
-            if (error.message.includes("2004") || error.message.includes("exceed the limits")) {
-                els.errorMsg.textContent = "These locations are too far apart to calculate a walking route.";
-            } else {
-                els.errorMsg.textContent = "Route not found or unable to cross terrain.";
-            }
-        }
-        showSheetState('error');
-    }
-}
+//     } catch (error) {
+//         console.error("Routing Error:", error);
+//         if (els.errorMsg) {
+//             // Check if the error message contains our specific ORS limit error
+//             if (error.message.includes("2004") || error.message.includes("exceed the limits")) {
+//                 els.errorMsg.textContent = "These locations are too far apart to calculate a walking route.";
+//             } else {
+//                 els.errorMsg.textContent = "Route not found or unable to cross terrain.";
+//             }
+//         }
+//         showSheetState('error');
+//     }
+// }
 
 function showSheetState(view) {
-    // 1. Force the sheet to pop up immediately by removing both restrictor classes
+    // 1. Unhide the sheet container, but DO NOT automatically remove 'collapsed'
     els.bottomSheet.classList.remove('hidden');
-    els.bottomSheet.classList.remove('collapsed');
 
     // 2. Hide all internal content first
     els.loadingState.classList.add('hidden');
@@ -279,10 +430,20 @@ function showSheetState(view) {
     // 3. Show only the specific view requested
     if (view === 'loading') {
         els.loadingState.classList.remove('hidden');
-    } else if (view === 'details') {
+        
+        // Only force the sheet to pop up if it's a completely NEW search
+        // (meaning route details aren't actively populated yet)
+        if (!state.end) {
+            els.bottomSheet.classList.remove('collapsed');
+        }
+    } 
+    else if (view === 'details') {
         els.routeDetails.classList.remove('hidden');
-    } else if (view === 'error') {
+    } 
+    else if (view === 'error') {
         els.errorState.classList.remove('hidden');
+        // Always force the sheet open to show an error so the user isn't confused
+        els.bottomSheet.classList.remove('collapsed'); 
     }
 }
 
