@@ -365,3 +365,127 @@ body, html {
     color: var(--text-secondary) !important;
     text-align: center;
 }
+
+/* =========================================
+   THEME TOGGLE BUTTON
+   ========================================= */
+.theme-toggle-btn {
+    position: absolute;
+    top: 150px; /* Sits neatly beneath the search panel */
+    left: 16px;
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    width: 44px;
+    height: 44px;
+    font-size: 20px;
+    cursor: pointer;
+    z-index: 1000;
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-primary);
+    transition: transform 0.1s, background-color 0.2s;
+}
+
+.theme-toggle-btn:active {
+    transform: scale(0.95);
+}
+
+/* =========================================
+   DARK THEME OVERRIDES
+   ========================================= */
+
+/* 1. Seamlessly override your root variables */
+body.dark-theme {
+    --bg-color: #1c1c1e;
+    --text-primary: #f2f2f7;
+    --text-secondary: #a1a1aa;
+    --border-color: #38383a;
+    --shadow: 0 6px 16px rgba(0, 0, 0, 0.6);
+    background-color: #000000;
+}
+
+/* 2. Patch elements with hardcoded light-mode hex colors */
+body.dark-theme .input-group,
+body.dark-theme .autocomplete-item:hover,
+body.dark-theme .stat-box,
+body.dark-theme .section-card,
+body.dark-theme .time-breakdown {
+    background: #2c2c2e;
+    border-color: var(--border-color);
+}
+
+body.dark-theme .badge {
+    background: #38383a;
+    color: var(--text-primary);
+}
+
+body.dark-theme .swap-btn,
+body.dark-theme .autocomplete-list {
+    background: var(--bg-color);
+}
+
+/* 3. Fix input text visibility */
+body.dark-theme input {
+    color: var(--text-primary);
+}
+
+body.dark-theme input::placeholder {
+    color: var(--text-secondary);
+}
+
+/* 4. Adjust specific accent boxes for better contrast */
+body.dark-theme .confidence-note {
+    background: #1e1e2d;
+    color: #818cf8 !important; /* Soft purple/blue for dark mode */
+}
+
+body.dark-theme .drag-handle {
+    background: #55555a;
+}
+
+/* --- Fix remaining Dark Mode text bugs --- */
+body.dark-theme .autocomplete-item,
+body.dark-theme #loading-state,
+body.dark-theme #error-state {
+    color: var(--text-primary);
+}
+
+/* --- Live Tracker Blue Dot & Directional Cone --- */
+.live-tracker-dot {
+    width: 16px;
+    height: 16px;
+    background-color: #007AFF;
+    border-radius: 50%;
+    border: 2px solid white;
+    box-shadow: 0 0 6px rgba(0,0,0,0.4);
+    position: relative;
+}
+
+.live-tracker-heading {
+    content: '';
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-bottom: 12px solid #007AFF;
+    display: none; /* Hidden until we get heading data */
+    filter: drop-shadow(0 -2px 2px rgba(0,0,0,0.3));
+}
+
+/* #btn-my-location {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    /* ... keep your existing background/border/shadow rules ... */
+} */

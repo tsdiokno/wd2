@@ -2,6 +2,8 @@ import { MapManager } from './map.js';
 import { geocodeSearch, getRoute } from './api.js';
 import { analyzeTerrainRoute } from './calculator.js';
 
+document.body.classList.add('dark-theme'); // Dark mode by default!
+
 // Application State
 const state = {
     start: null, // { lat, lng, label }
@@ -21,8 +23,22 @@ const els = {
     routeDetails: document.getElementById('route-details'),
     errorState: document.getElementById('error-state'),
     errorMsg: document.getElementById('ui-error-message'),
-    sheetToggle: document.getElementById('sheet-toggle')
+    sheetToggle: document.getElementById('sheet-toggle'),
+    btnTheme: document.getElementById('btn-theme'),
+    btnOrientation: document.getElementById('btn-orientation')
 };
+
+// Native-looking SVG icons for the 3 navigation states
+const navIcons = {
+    free: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>`,
+    tracking: `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>`,
+    compass: `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"></polygon></svg>`
+};
+
+// Compass Smoothing Variables
+let smoothedHeading = 0;
+const COMPASS_ALPHA = 0.15; // Low-pass filter factor (lower = smoother but slightly delayed)
+const COMPASS_THRESHOLD = 1.0; // Minimum degree change to trigger a screen update
 
 // 1. Add this variable near the top of app.js (under state and els)
 let currentRouteController = null;
@@ -124,18 +140,136 @@ async function calculateRoute() {
 
 const mapManager = new MapManager('map');
 
+// --- 1. Compass State & SVG Icons ---
+let compassInitialized = false;
+
+const iconNorthUp = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>`;
+const iconHeadingUp = `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"></polygon></svg>`;
+
+// --- 2. Safari iOS 13+ Permission Flow ---
+async function requestAndStartCompass() {
+    if (compassInitialized) return true;
+
+    // Check if we are on an Apple device requiring explicit permission
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try {
+            const permission = await DeviceOrientationEvent.requestPermission();
+            if (permission === 'granted') {
+                window.addEventListener('deviceorientation', handleDeviceOrientation, true);
+                compassInitialized = true;
+                return true;
+            } else {
+                alert("Compass access denied. Check your Safari settings.");
+                return false;
+            }
+        } catch (error) {
+            console.error("Compass permission error:", error);
+            return false;
+        }
+    } else {
+        // Non-iOS devices (Android/Desktop) don't require the permission prompt
+        window.addEventListener('deviceorientation', handleDeviceOrientation, true);
+        compassInitialized = true;
+        return true;
+    }
+}
+
+// --- 3. The Filtered Compass Engine ---
+function handleDeviceOrientation(e) {
+    let rawHeading = e.webkitCompassHeading;
+    if (rawHeading === undefined && e.alpha !== null) {
+        rawHeading = Math.abs(e.alpha - 360);
+    }
+
+    if (rawHeading !== undefined) {
+        // Shortest path calculation to prevent 360-degree snap spins
+        let diff = (rawHeading - smoothedHeading + 180) % 360 - 180;
+        diff = diff < -180 ? diff + 360 : diff;
+
+        if (Math.abs(diff) > COMPASS_THRESHOLD) {
+            // Apply Low-Pass Filter
+            smoothedHeading = (smoothedHeading + diff * COMPASS_ALPHA + 360) % 360;
+
+            // Always rotate the blue marker cone
+            mapManager.updateUserHeading(smoothedHeading);
+
+            // If active, dynamically rotate the entire map canvas
+            if (mapManager.trackingMode === 'heading-up') {
+                mapManager.map.jumpTo({ bearing: smoothedHeading });
+            }
+        }
+    }
+}
+
 function init() {
     setupEventListeners();
+
+    // Device Compass Tracker with Low-Pass Filter
+    window.addEventListener('deviceorientation', (e) => {
+        let rawHeading = e.webkitCompassHeading;
+        if (rawHeading === undefined && e.alpha !== null) {
+            rawHeading = Math.abs(e.alpha - 360);
+        }
+
+        if (rawHeading !== undefined) {
+            // 1. Calculate the shortest path difference to prevent 359° -> 1° wild spinning
+            let diff = (rawHeading - smoothedHeading + 180) % 360 - 180;
+            diff = diff < -180 ? diff + 360 : diff;
+
+            // 2. Deadzone Threshold: Ignore micro-jitters
+            if (Math.abs(diff) > COMPASS_THRESHOLD) {
+                // 3. Apply Low-Pass Filter to smooth out sudden sensor spikes
+                smoothedHeading = (smoothedHeading + diff * COMPASS_ALPHA + 360) % 360;
+
+                // ALWAYS rotate the blue cone on the map
+                mapManager.updateUserHeading(smoothedHeading);
+
+                // ONLY rotate the entire map if they explicitly clicked into Compass mode
+                if (mapManager.trackingMode === 'heading-up') {
+                    // Use jumpTo instead of easeTo because our math is already handling the smoothing.
+                    // Using easeTo on top of a filtered sensor causes "rubber-banding" lag.
+                    mapManager.map.jumpTo({
+                        bearing: smoothedHeading
+                    });
+                }
+            }
+        }
+    });
     
     // Map tap assignment (sets start if empty, else end)
     mapManager.onClick((lat, lng) => {
-        // Now it perfectly catches the two numbers sent by map.js!
         if (!state.start) {
             updateLocation('start', { lat, lng, label: 'Dropped Pin (Start)' });
         } else if (!state.end) {
             updateLocation('end', { lat, lng, label: 'Dropped Pin (End)' });
         }
     });
+
+    // 🚀 NEW: Auto-center on the user's real location on boot
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const lat = pos.coords.latitude;
+                const lng = pos.coords.longitude;
+                
+                // 1. Drop the blue dot on their current location
+                mapManager.updateLivePosition(lat, lng);
+                
+                // 2. Fly the camera smoothly to their location
+                mapManager.map.flyTo({
+                    center: [lng, lat],
+                    zoom: 16, // A nice, tight neighborhood zoom level
+                    duration: 2000, // 2-second cinematic sweep
+                    essential: true
+                });
+            },
+            (err) => {
+                console.warn("Initial location fetch denied or failed:", err);
+                // If they deny GPS permissions, it just stays safely at the default coordinates
+            },
+            { enableHighAccuracy: true, timeout: 5000 }
+        );
+    }
 }
 
 // Helper function for iOS Compass Permission
@@ -153,70 +287,98 @@ async function requestCompassPermission() {
 }
 
 function setupEventListeners() {
+
+    // Toggle Light/Dark Mode
+    if (els.btnTheme) {
+        els.btnTheme.addEventListener('click', () => {
+            const isDark = document.body.classList.contains('dark-theme');
+            const newTheme = isDark ? 'light' : 'dark';
+            
+            // 1. Toggle CSS on the page
+            document.body.classList.toggle('dark-theme');
+            
+            // 2. Change the map tiles
+            mapManager.setTheme(newTheme);
+            
+            // 3. Wait for the new map tiles to load, then quickly re-draw pins and route
+            mapManager.map.once('styledata', () => {
+                if (state.start) mapManager.setMarker('start', state.start.lat, state.start.lng);
+                if (state.end) mapManager.setMarker('end', state.end.lat, state.end.lng);
+                if (state.end && state.start) calculateRoute(); 
+            });
+        });
+    }
+
     els.btnSwap.addEventListener('click', () => {
         const temp = state.start;
         updateLocation('start', state.end);
         updateLocation('end', temp);
     });
 
-    // Reset button styles if user manually breaks the tracking lock by dragging map
+    // Set the initial icon
+    els.btnMyLoc.innerHTML = '📍';
+    
+    // Reset UI if user manually drags map
     window.addEventListener('tracking-broken', () => {
-        els.btnMyLoc.style.backgroundColor = ""; 
-        els.btnMyLoc.style.color = "";
+        els.btnMyLoc.innerHTML = navIcons.free;
+        els.btnMyLoc.style.color = "var(--text-primary)";
     });
 
-    // 2-Mode My Location Toggle
-    els.btnMyLoc.addEventListener('click', async () => {
-        if (mapManager.trackingMode === 'free') {
-            // TURN NAVIGATION MODE ON
-            const hasCompassAccess = await requestCompassPermission();
-            if (!hasCompassAccess) return;
+    // BUTTON A: GPS Location (Only handles centering the user)
+els.btnMyLoc.addEventListener('click', () => {
+    // Start GPS if it isn't running
+    if (!state.start || state.start.label !== "Live Tracking...") {
+        els.inputStart.value = "Locating...";
+        navigator.geolocation.getCurrentPosition(
+            (pos) => updateLocation('start', { lat: pos.coords.latitude, lng: pos.coords.longitude, label: 'Live Tracking...' }),
+            (err) => { els.inputStart.value = state.start ? state.start.label : ""; },
+            { enableHighAccuracy: true }
+        );
+    }
 
+    if (!mapManager.watchId && navigator.geolocation) {
+        mapManager.watchId = navigator.geolocation.watchPosition(
+            (pos) => mapManager.updateLivePosition(pos.coords.latitude, pos.coords.longitude),
+            (err) => console.warn(err),
+            { enableHighAccuracy: true, maximumAge: 0 }
+        );
+    }
+
+    // Force map to pan to the current known location
+    if (mapManager.liveMarker) {
+        const lngLat = mapManager.liveMarker.getLngLat();
+        mapManager.map.panTo(lngLat, { duration: 800 });
+    }
+});
+
+// BUTTON B: Orientation Toggle (Only handles map rotation & permissions)
+if (els.btnOrientation) {
+    // Default MapLibre to standard North-Up internally
+    mapManager.setTrackingMode('north-up'); 
+    
+    els.btnOrientation.addEventListener('click', async () => {
+        const hasAccess = await requestAndStartCompass();
+        if (!hasAccess) return;
+
+        if (mapManager.trackingMode === 'north-up') {
+            // Switch to Heading-Up
             mapManager.setTrackingMode('heading-up');
-            els.btnMyLoc.style.backgroundColor = "#007AFF"; 
-            els.btnMyLoc.style.color = "#FFF";
-            
-            // ACTION 1: THE ROUTING ENGINE (Runs exactly once)
-            // Grab a single, static coordinate to calculate the route.
-            if (!state.start || state.start.label !== "Live Tracking...") {
-                els.inputStart.value = "Locating...";
-                
-                navigator.geolocation.getCurrentPosition(
-                    (pos) => {
-                        // This updates the UI and fires calculateRoute() exactly once.
-                        updateLocation('start', { 
-                            lat: pos.coords.latitude, 
-                            lng: pos.coords.longitude, 
-                            label: 'Live Tracking...' 
-                        });
-                    },
-                    (err) => {
-                        console.warn("Static location error:", err);
-                        els.inputStart.value = state.start ? state.start.label : "";
-                    },
-                    { enableHighAccuracy: true }
-                );
-            }
-
-            // ACTION 2: THE VISUAL TRACKER (Runs entirely client-side)
-            // This stream ONLY moves the blue dot. It never touches the API.
-            if (navigator.geolocation) {
-                mapManager.watchId = navigator.geolocation.watchPosition(
-                    (pos) => {
-                        // Just push the coordinates directly to the MapLibre canvas
-                        mapManager.updateLivePosition(pos.coords.latitude, pos.coords.longitude);
-                    },
-                    (err) => console.warn("Live tracking error:", err),
-                    { enableHighAccuracy: true, maximumAge: 0 }
-                );
-            }
-
+            els.btnOrientation.innerHTML = iconHeadingUp;
+            els.btnOrientation.style.color = "#ff9500"; // Orange active state
         } else {
-            // TURN NAVIGATION MODE OFF
-            mapManager.setTrackingMode('free');
-            els.btnMyLoc.style.backgroundColor = ""; 
-            els.btnMyLoc.style.color = "";
+            // Switch to North-Up
+            mapManager.setTrackingMode('north-up');
+            els.btnOrientation.innerHTML = iconNorthUp;
+            els.btnOrientation.style.color = "var(--text-primary)"; // Reset color
         }
+    });
+}
+
+    // Reset UI if user manually drags map
+    window.addEventListener('tracking-broken', () => {
+        els.btnMyLoc.innerHTML = '📍';
+        els.btnMyLoc.style.backgroundColor = ""; 
+        els.btnMyLoc.style.color = "";
     });
 
     // Toggle the bottom sheet up and down
@@ -336,88 +498,6 @@ function handleMarkerDrag(type, latLng) {
     calculateRoute();
 }
 
-// async function calculateRoute() {
-//     // Guard clause: Prevent running if either point is missing
-//     if (!state.start?.lat || !state.end?.lat) {
-//         els.bottomSheet.classList.add('hidden');
-//         mapManager.clearRoute();
-//         return; 
-//     }
-
-//     showSheetState('loading');
-    
-//     try {
-//         // 1. Get multiple route options from ORS
-//         const data = await getRoute(state.start, state.end);
-        
-//         if (!data.features || data.features.length === 0) {
-//             throw new Error("No viable routes found.");
-//         }
-
-//         let bestRouteGeometry = null;
-//         let bestStats = null;
-//         let lowestTime = Infinity;
-
-//         // 2. Evaluate every route feature returned by ORS
-//         for (const feature of data.features) {
-//             const coordinates = feature.geometry.coordinates; 
-//             const distanceMeters = feature.properties.summary.distance;
-
-//             // Map ORS 3D coordinate arrays [lng, lat, elev] into our required object structure
-//             const elevationData = coordinates.map(coord => ({
-//                 lng: coord[0],
-//                 lat: coord[1],
-//                 // If ORS drops elevation data for any reason, safely default to 0 (flat)
-//                 elevation: coord.length > 2 ? coord[2] : 0 
-//             }));
-
-//             // 3. Run the physiological model
-//             const stats = analyzeTerrainRoute(elevationData, distanceMeters);
-
-//             // 4. Optimization: Keep only the physically fastest path
-//             if (stats.finalTimeMin < lowestTime) {
-//                 lowestTime = stats.finalTimeMin;
-//                 bestStats = stats;
-//                 bestRouteGeometry = feature.geometry;
-//             }
-//         }
-
-//         if (!bestRouteGeometry) {
-//             throw new Error("Failed to evaluate route paths.");
-//         }
-
-//         // 5. Draw the most efficient route & Update UI
-//         mapManager.drawRoute(bestRouteGeometry);
-//         updateRouteUI(bestStats);
-//         showSheetState('details');
-
-//         // --- NEW GMAPS INTEGRATION ---
-//         const gmapsBtn = document.getElementById('btn-gmaps');
-//         if (gmapsBtn) {
-//             // Remove any old event listeners by cloning the button (cleanest vanilla JS approach)
-//             const newBtn = gmapsBtn.cloneNode(true);
-//             gmapsBtn.parentNode.replaceChild(newBtn, gmapsBtn);
-            
-//             // Add the fresh listener with the current route's geometry
-//             newBtn.addEventListener('click', () => {
-//                 openInGoogleMaps(state.start, state.end, bestRouteGeometry);
-//             });
-//         }
-
-//     } catch (error) {
-//         console.error("Routing Error:", error);
-//         if (els.errorMsg) {
-//             // Check if the error message contains our specific ORS limit error
-//             if (error.message.includes("2004") || error.message.includes("exceed the limits")) {
-//                 els.errorMsg.textContent = "These locations are too far apart to calculate a walking route.";
-//             } else {
-//                 els.errorMsg.textContent = "Route not found or unable to cross terrain.";
-//             }
-//         }
-//         showSheetState('error');
-//     }
-// }
-
 function showSheetState(view) {
     // 1. Unhide the sheet container, but DO NOT automatically remove 'collapsed'
     els.bottomSheet.classList.remove('hidden');
@@ -448,21 +528,19 @@ function showSheetState(view) {
 }
 
 function updateRouteUI(stats) {
-    const formatTime = (min) => {
-        if (min < 60) return `${Math.round(min)} min`;
-        const h = Math.floor(min / 60);
-        const m = Math.round(min % 60);
-        return `${h} hr ${m} min`;
+    // Correctly turns 74 into 1h 14m
+    const formatTime = (totalMin) => {
+        if (totalMin < 60) return `${Math.round(totalMin)}m`;
+        const h = Math.floor(totalMin / 60);
+        const m = Math.round(totalMin % 60);
+        return m > 0 ? `${h}h ${m}m` : `${h}h`;
     };
 
-    // Helper to prevent null reference crashes if HTML is modified
     const safeSetText = (id, text) => {
         const el = document.getElementById(id);
         if (el) el.textContent = text;
-        else console.warn(`UI Element missing in DOM: ${id}`);
     };
 
-    // Update Primary UI
     safeSetText('ui-time', formatTime(stats.finalTimeMin));
     safeSetText('ui-distance', `${stats.distanceKm.toFixed(2)} km`);
     safeSetText('ui-difficulty', stats.difficulty);
@@ -472,14 +550,14 @@ function updateRouteUI(stats) {
     safeSetText('ui-about-route', stats.summary);
     safeSetText('ui-calories', Math.round(stats.calories));
 
-    // Update Mathematical Breakdown
+    // Universal application for the breakdown list
     const b = stats.breakdown;
-    safeSetText('bd-base', `${Math.round(b.baseTimeMin)} min`);
-    safeSetText('bd-elev', `+${Math.round(b.elevPenaltyMin)} min`);
-    safeSetText('bd-climb', `+${Math.round(b.climbPenaltyMin)} min`);
-    safeSetText('bd-recovery', `-${Math.round(b.recoveryMin)} min`);
-    safeSetText('bd-fatigue', `+${Math.round(b.fatigueMin)} min`);
-    safeSetText('bd-total', `${Math.round(stats.finalTimeMin)} min`);
+    safeSetText('bd-base', formatTime(b.baseTimeMin));
+    safeSetText('bd-elev', `+${formatTime(b.elevPenaltyMin)}`);
+    safeSetText('bd-climb', `+${formatTime(b.climbPenaltyMin)}`);
+    safeSetText('bd-recovery', `-${formatTime(b.recoveryMin)}`);
+    safeSetText('bd-fatigue', `+${formatTime(b.fatigueMin)}`);
+    safeSetText('bd-total', formatTime(stats.finalTimeMin));
 }
 
 // Boot up the application

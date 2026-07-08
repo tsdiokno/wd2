@@ -1,20 +1,26 @@
 export class MapManager {
     constructor(containerId) {
+        this.currentTheme = 'dark'; // Dark mode by default
+        
         this.map = new maplibregl.Map({
             container: containerId,
-            // MapTiler's street map
-            style: 'https://api.maptiler.com/maps/streets-v2/style.json?key=ohKQ0BopPAxViKTMGueU', 
-            center: [120.98, 14.70], // Centered near Valenzuela
+            style: this.getStyleUrl(this.currentTheme), 
+            center: [120.98, 14.70], 
             zoom: 15,
             pitch: 0,
             bearing: 0
         });
-        
+
+        // QUALITY OF LIFE: Add Compass (click to snap North) and Zoom controls
+        this.map.addControl(new maplibregl.NavigationControl({
+            visualizePitch: true, // Compass icon tilts when the map is in 3D mode
+            showZoom: true,
+            showCompass: true
+        }), 'top-right');
+
         this.liveMarker = null;
         this.markers = {};
-
-        // 1. Navigation State Variable (2-mode system)
-        this.trackingMode = 'free'; // 'free' or 'heading-up'
+        this.trackingMode = 'free'; 
         this.watchId = null;
 
         // 2. Compass Device Orientation Listener
@@ -45,6 +51,21 @@ export class MapManager {
 
         this.map.on('dragstart', breakLock);
         this.map.on('rotatestart', breakLock);
+    }
+
+    // Helper to switch MapTiler styles
+    getStyleUrl(theme) {
+        const key = 'ohKQ0BopPAxViKTMGueU'; 
+        return theme === 'dark' 
+            ? `https://api.maptiler.com/maps/streets-v2-dark/style.json?key=${key}`
+            : `https://api.maptiler.com/maps/streets-v2/style.json?key=${key}`;
+    }
+
+    setTheme(theme) {
+        this.currentTheme = theme;
+        this.map.setStyle(this.getStyleUrl(theme));
+        // Note: MapLibre wipes custom route layers when changing base styles. 
+        // We will tell app.js to re-draw the pins/route after the style updates!
     }
 
     onClick(callback) {
@@ -86,81 +107,82 @@ export class MapManager {
         }
     }
 
-    // Hot-swaps new route data into the existing GPU pipeline
+    // UPDATED: Now automatically pans and zooms to fit the whole route
     drawRoute(geometry) {
         const source = this.map.getSource('route-source');
         
         if (source) {
-            // 🚀 LIGHTNING FAST: The layer exists, just pipe new data to it
             source.setData(geometry);
         } else {
-            // FIRST TIME ONLY: Set up the WebGL source and layer
-            this.map.addSource('route-source', {
-                'type': 'geojson',
-                'data': geometry 
-            });
-
+            this.map.addSource('route-source', { 'type': 'geojson', 'data': geometry });
             this.map.addLayer({
                 'id': 'route-layer',
                 'type': 'line',
                 'source': 'route-source',
-                'layout': {
-                    'line-join': 'round',
-                    'line-cap': 'round'
-                },
-                'paint': {
-                    'line-color': '#007AFF',
-                    'line-width': 5,
-                    'line-opacity': 0.8
-                }
+                'layout': { 'line-join': 'round', 'line-cap': 'round' },
+                'paint': { 'line-color': '#007AFF', 'line-width': 5, 'line-opacity': 0.8 }
             });
         }
+
+        // AUTO-FIT: Calculate bounding box of the entire route
+        const coords = geometry.coordinates;
+        const bounds = coords.reduce((acc, coord) => {
+            return [
+                [Math.min(acc[0][0], coord[0]), Math.min(acc[0][1], coord[1])], // Southwest
+                [Math.max(acc[1][0], coord[0]), Math.max(acc[1][1], coord[1])]  // Northeast
+            ];
+        }, [[coords[0][0], coords[0][1]], [coords[0][0], coords[0][1]]]);
+
+        // Smoothly fly to the route bounds, leaving 50px of padding from the screen edges
+        this.map.fitBounds(bounds, { padding: 50, duration: 1000 });
     }
 
-    /**
-     * Toggles tracking mechanics, view pitch, and clears streams when dropped
-     */
+    // 1. Update the tracking state manager
     setTrackingMode(mode) {
         this.trackingMode = mode;
-
         if (mode === 'heading-up') {
-            // Apply a slight tilt for forward perspective visibility
+            // Compass Mode: Tilt for 3D perspective
             this.map.easeTo({ pitch: 45, duration: 500 });
-        } else if (mode === 'free') {
-            // Turn off GPS watch tracker to save battery
-            if (this.watchId) {
-                navigator.geolocation.clearWatch(this.watchId);
-                this.watchId = null;
-            }
-            // Restore a flat standard 2D perspective
-            this.map.easeTo({ pitch: 0, duration: 500 });
+        } else if (mode === 'north-up') {
+            // Standard Mode: Snap back to flat, North-Up
+            this.map.easeTo({ pitch: 0, bearing: 0, duration: 500 });
         }
     }
 
-    /**
-     * Dedicated live tracking target updater. Handles camera focus transitions.
-     */
+    // 2. Build the live marker with the compass cone
     updateLivePosition(lat, lng) {
         if (!this.liveMarker) {
-            // Distinct user localization dot layout
             const el = document.createElement('div');
-            el.style.width = '16px';
-            el.style.height = '16px';
-            el.style.backgroundColor = '#007AFF';
-            el.style.borderRadius = '50%';
-            el.style.border = '2px solid white';
-            el.style.boxShadow = '0 0 6px rgba(0,0,0,0.4)';
+            el.className = 'live-tracker-dot';
+            
+            const headingArrow = document.createElement('div');
+            headingArrow.className = 'live-tracker-heading';
+            headingArrow.id = 'heading-arrow';
+            el.appendChild(headingArrow);
 
-            this.liveMarker = new maplibregl.Marker({ element: el })
-                .setLngLat([lng, lat])
-                .addTo(this.map);
+            this.liveMarker = new maplibregl.Marker({ 
+                element: el,
+                rotationAlignment: 'map' // Glues the arrow rotation to Map North
+            })
+            .setLngLat([lng, lat])
+            .addTo(this.map);
         } else {
             this.liveMarker.setLngLat([lng, lat]);
         }
 
-        // Lock map frame center over coordinates exclusively when Heading-Up tracking is operational
-        if (this.trackingMode === 'heading-up') {
+        // Only lock the camera if we are in one of the active tracking modes
+        if (this.trackingMode === 'tracking' || this.trackingMode === 'heading-up') {
             this.map.panTo([lng, lat], { duration: 800 });
+        }
+    }
+
+    // 3. New Function: Rotates the arrow when the phone spins
+    updateUserHeading(heading) {
+        if (this.liveMarker) {
+            const arrow = this.liveMarker.getElement().querySelector('#heading-arrow');
+            if (arrow) arrow.style.display = 'block'; // Show the cone now that we have data
+            
+            this.liveMarker.setRotation(heading); // Point it at true heading
         }
     }
 }
