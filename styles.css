@@ -478,14 +478,3 @@ body.dark-theme #error-state {
     display: none; /* Hidden until we get heading data */
     filter: drop-shadow(0 -2px 2px rgba(0,0,0,0.3));
 }
-
-/* #btn-my-location {
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    /* ... keep your existing background/border/shadow rules ... */
-} */
