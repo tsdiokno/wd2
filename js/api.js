@@ -46,3 +46,23 @@ export async function getRoute(start, end, signal) {
     if (!response.ok) throw new Error(`ORS API failed with status ${response.status}`);
     return await response.json();
 }
+
+export async function getWeather(lat, lng) {
+    // Open-Meteo is free and requires no API key!
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,apparent_temperature,precipitation`;
+    
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("Weather API failed");
+        const data = await response.json();
+        
+        return {
+            temp: Math.round(data.current.temperature_2m),
+            feelsLike: Math.round(data.current.apparent_temperature),
+            rain: data.current.precipitation // in millimeters
+        };
+    } catch (error) {
+        console.warn("Could not fetch weather:", error);
+        return null;
+    }
+}

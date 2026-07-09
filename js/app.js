@@ -1,5 +1,5 @@
 import { MapManager } from './map.js';
-import { geocodeSearch, getRoute } from './api.js';
+import { geocodeSearch, getRoute, getWeather } from './api.js';
 import { analyzeTerrainRoute } from './calculator.js';
 
 document.body.classList.add('dark-theme'); // Dark mode by default!
@@ -9,6 +9,14 @@ const state = {
     start: null, // { lat, lng, label }
     end: null
 };
+
+// Global time formatter
+function formatTime(totalMin) {
+    if (totalMin < 60) return `${Math.round(totalMin)}m`;
+    const h = Math.floor(totalMin / 60);
+    const m = Math.round(totalMin % 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
 
 // UI Elements
 const els = {
@@ -24,182 +32,178 @@ const els = {
     errorState: document.getElementById('error-state'),
     errorMsg: document.getElementById('ui-error-message'),
     sheetToggle: document.getElementById('sheet-toggle'),
-    btnTheme: document.getElementById('btn-theme'),
-    btnOrientation: document.getElementById('btn-orientation')
+    btnTheme: document.getElementById('btn-theme')
 };
-
-// Native-looking SVG icons for the 3 navigation states
-const navIcons = {
-    free: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>`,
-    tracking: `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>`,
-    compass: `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"></polygon></svg>`
-};
-
-// Compass Smoothing Variables
-let smoothedHeading = 0;
-const COMPASS_ALPHA = 0.15; // Low-pass filter factor (lower = smoother but slightly delayed)
-const COMPASS_THRESHOLD = 1.0; // Minimum degree change to trigger a screen update
 
 // 1. Add this variable near the top of app.js (under state and els)
 let currentRouteController = null;
 
-async function calculateRoute() {
-    if (!state.start?.lat || !state.end?.lat) {
-        els.bottomSheet.classList.add('hidden');
-        mapManager.clearRoute();
-        return; 
-    }
-
-    // 2. Kill the previous API request if it's still running
-    if (currentRouteController) {
-        currentRouteController.abort(); 
-    }
-    // Create a new kill-switch for THIS specific request
-    currentRouteController = new AbortController();
-
-    showSheetState('loading');
+// Add this helper function to generate the literal impact statements
+function generateImpactStatement(route, fastestRoute, weather) {
+    const isRainy = weather && weather.rain > 0;
+    const isHot = weather && weather.feelsLike > 33;
+    const timeDiff = Math.round(route.stats.finalTimeMin - fastestRoute.stats.finalTimeMin);
     
-    try {
-        // 3. Pass the signal to your API function 
-        // (You will need to update api.js to accept this signal in its fetch call!)
-        const data = await getRoute(state.start, state.end, currentRouteController.signal);
-        
-        if (!data.features || data.features.length === 0) {
-            throw new Error("No viable routes found.");
+    if (isRainy) {
+        if (route.label === "Fastest") return "Recommended. Shortest time exposed to rain.";
+        return `Not recommended. Adds ${timeDiff} minutes of rain exposure.`;
+    }
+    
+    if (isHot) {
+        if (route.label === "Fastest" && route.stats.ascentMeters > 20) {
+            return "Quickest route, but includes a steep climb in high heat.";
         }
+        if (route.label === "Flattest") {
+            return `Adds ${timeDiff} minutes, but avoids hills to reduce physical strain in the heat.`;
+        }
+    }
 
-        let bestRouteGeometry = null;
-        let bestStats = null;
-        let lowestTime = Infinity;
+    // Default statements if weather is normal
+    if (route.label === "Fastest") return "Quickest direct path.";
+    if (route.label === "Flattest") return `Adds ${timeDiff} minutes for a flatter, easier walk.`;
+    return `Secondary route. Adds ${timeDiff} minutes.`;
+}
 
-        // 2. Evaluate every route feature returned by ORS
-        for (const feature of data.features) {
-            const coordinates = feature.geometry.coordinates; 
-            const distanceMeters = feature.properties.summary.distance;
+// Update your route calculation flow
+async function calculateRoute() {
+    if (!state.start || !state.end) return;
 
-            // Map ORS 3D coordinate arrays [lng, lat, elev] into our required object structure
-            const elevationData = coordinates.map(coord => ({
-                lng: coord[0],
-                lat: coord[1],
-                // If ORS drops elevation data for any reason, safely default to 0 (flat)
-                elevation: coord.length > 2 ? coord[2] : 0 
+    try {
+        // 1. Fetch Route and Weather in parallel
+        const [routeData, weatherData] = await Promise.all([
+            getRoute(state.start, state.end),
+            getWeather(state.start.lat, state.start.lng)
+        ]);
+
+        // 2. Process all returned routes through your advanced calculator
+        let processedRoutes = routeData.features.map(feature => {
+            
+            // A. Safely map ORS coordinates [lng, lat, elevation] into the {lat, lng, elevation} format your calculator expects.
+            // The `c[2] || 0` is the magic shield that stops the NaN crashes!
+            const elevationData = feature.geometry.coordinates.map(c => ({
+                lng: c[0],
+                lat: c[1],
+                elevation: c[2] || 0 
             }));
 
-            // 3. Run the physiological model
-            const stats = analyzeTerrainRoute(elevationData, distanceMeters);
+            // B. ORS gives us the total distance out-of-the-box in the properties
+            const totalDistanceMeters = feature.properties.summary.distance;
 
-            // 4. Optimization: Keep only the physically fastest path
-            if (stats.finalTimeMin < lowestTime) {
-                lowestTime = stats.finalTimeMin;
-                bestStats = stats;
-                bestRouteGeometry = feature.geometry;
-            }
-        }
+            // C. Run your advanced engine
+            return {
+                geometry: feature.geometry,
+                stats: analyzeTerrainRoute(elevationData, totalDistanceMeters)
+            };
+        });
 
-        if (!bestRouteGeometry) {
-            throw new Error("Failed to evaluate route paths.");
-        }
+        // 3. Sort by Time to find the Fastest
+        processedRoutes.sort((a, b) => a.stats.finalTimeMin - b.stats.finalTimeMin);
+        processedRoutes[0].label = "Fastest";
 
-        // 5. Draw the most efficient route & Update UI
-        mapManager.drawRoute(bestRouteGeometry);
-        updateRouteUI(bestStats);
-        showSheetState('details');
-
-        // --- NEW GMAPS INTEGRATION ---
-        const gmapsBtn = document.getElementById('btn-gmaps');
-        if (gmapsBtn) {
-            // Remove any old event listeners by cloning the button (cleanest vanilla JS approach)
-            const newBtn = gmapsBtn.cloneNode(true);
-            gmapsBtn.parentNode.replaceChild(newBtn, gmapsBtn);
+        // 4. Identify Flattest & Alternative among the remaining
+        if (processedRoutes.length > 1) {
+            const remaining = processedRoutes.slice(1);
+            remaining.sort((a, b) => a.stats.ascentMeters - b.stats.ascentMeters);
             
-            // Add the fresh listener with the current route's geometry
-            newBtn.addEventListener('click', () => {
-                openInGoogleMaps(state.start, state.end, bestRouteGeometry);
-            });
-        }
-
-    } catch (error) {
-        // 4. Ignore errors that were caused by us intentionally aborting the fetch
-        if (error.name === 'AbortError') {
-            console.log("Previous route calculation cancelled.");
-            return; 
-        }
-
-        console.error("Routing Error:", error);
-        if (els.errorMsg) {
-            // Check if the error message contains our specific ORS limit error
-            if (error.message.includes("2004") || error.message.includes("exceed the limits")) {
-                els.errorMsg.textContent = "These locations are too far apart to calculate a walking route.";
+            // If the 2nd route actually has significantly less ascent than the fastest, call it Flattest
+            if (remaining[0].stats.ascentMeters < processedRoutes[0].stats.ascentMeters - 10) {
+                remaining[0].label = "Flattest";
+                if (remaining[1]) remaining[1].label = "Alternative";
             } else {
-                els.errorMsg.textContent = "Route not found or unable to cross terrain.";
+                remaining[0].label = "Alternative 1";
+                if (remaining[1]) remaining[1].label = "Alternative 2";
             }
         }
-        showSheetState('error');
+
+        // 5. Update the UI
+        renderRouteUI(processedRoutes, weatherData);
+        
+        // 6. Draw the fastest route on the map by default
+        mapManager.drawRoute(processedRoutes[0].geometry);
+
+    } catch (err) {
+        console.error("Routing error:", err);
     }
+}
+
+// 7. Render the UI
+function renderRouteUI(routes, weather) {
+    const sheet = document.getElementById('bottom-sheet');
+    const container = document.getElementById('route-options-container');
+    const contextBar = document.getElementById('global-context');
+    const weatherText = document.getElementById('weather-text');
+    const weatherIcon = document.getElementById('weather-icon');
+
+    // Update Weather Bar
+    if (weather) {
+        contextBar.classList.remove('hidden');
+        if (weather.rain > 0) {
+            weatherIcon.textContent = "🌧";
+            weatherText.textContent = `Heavy Rain • ${weather.temp}°C`;
+        } else if (weather.feelsLike > 33) {
+            weatherIcon.textContent = "☀️";
+            weatherText.textContent = `${weather.temp}°C (Feels like ${weather.feelsLike}°C) • Hot`;
+        } else {
+            weatherIcon.textContent = "⛅️";
+            weatherText.textContent = `${weather.temp}°C • Comfortable`;
+        }
+    }
+
+    // Render Route Cards
+    container.innerHTML = "";
+    const fastestRoute = routes[0];
+
+    let activeRouteCoords = routes[0].geometry.coordinates;
+
+    routes.forEach((route, index) => {
+        const card = document.createElement('div');
+        card.className = `route-card ${index === 0 ? 'selected' : ''}`;
+        
+        const timeStr = formatTime(route.stats.finalTimeMin); // Your existing formatter
+        const distStr = `${route.stats.distanceKm.toFixed(2)} km`;
+        const impact = generateImpactStatement(route, fastestRoute, weather);
+
+        card.innerHTML = `
+            <div class="route-header">
+                <span class="route-title">${route.label}</span>
+                <span class="route-metrics">${timeStr} • ${distStr}</span>
+            </div>
+            <div class="route-impact">${impact}</div>
+        `;
+
+        // Add Click Listener to swap routes
+        card.addEventListener('click', () => {
+            document.querySelectorAll('.route-card').forEach(c => c.classList.remove('selected'));
+            card.classList.add('selected');
+            
+            mapManager.drawRoute(route.geometry);
+            
+            // 2. Update the active coordinates when a user taps a different card
+            activeRouteCoords = route.geometry.coordinates;
+            
+            document.getElementById('ui-ascent').textContent = `${Math.round(route.stats.ascentMeters)} m`;
+            document.getElementById('ui-descent').textContent = `${Math.round(route.stats.descentMeters)} m`;
+            document.getElementById('route-details').classList.remove('hidden');
+        });
+
+        container.appendChild(card);
+    });
+
+    const btnStartNav = document.getElementById('btn-start-nav');
+
+    btnStartNav.onclick = () => {
+        openInGoogleMaps(activeRouteCoords);
+    };
+
+    // Populate initial nerd stats for the default route
+    document.getElementById('ui-ascent').textContent = `${Math.round(routes[0].stats.ascentMeters)} m`;
+    document.getElementById('ui-descent').textContent = `${Math.round(routes[0].stats.descentMeters)} m`;
+    document.getElementById('route-details').classList.remove('hidden');
+
+    sheet.classList.remove('collapsed');
 }
 
 const mapManager = new MapManager('map');
-
-// --- 1. Compass State & SVG Icons ---
-let compassInitialized = false;
-
-const iconNorthUp = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>`;
-const iconHeadingUp = `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"></polygon></svg>`;
-
-// --- 2. Safari iOS 13+ Permission Flow ---
-async function requestAndStartCompass() {
-    if (compassInitialized) return true;
-
-    // Check if we are on an Apple device requiring explicit permission
-    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-        try {
-            const permission = await DeviceOrientationEvent.requestPermission();
-            if (permission === 'granted') {
-                window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-                compassInitialized = true;
-                return true;
-            } else {
-                alert("Compass access denied. Check your Safari settings.");
-                return false;
-            }
-        } catch (error) {
-            console.error("Compass permission error:", error);
-            return false;
-        }
-    } else {
-        // Non-iOS devices (Android/Desktop) don't require the permission prompt
-        window.addEventListener('deviceorientation', handleDeviceOrientation, true);
-        compassInitialized = true;
-        return true;
-    }
-}
-
-// --- 3. The Filtered Compass Engine ---
-function handleDeviceOrientation(e) {
-    let rawHeading = e.webkitCompassHeading;
-    if (rawHeading === undefined && e.alpha !== null) {
-        rawHeading = Math.abs(e.alpha - 360);
-    }
-
-    if (rawHeading !== undefined) {
-        // Shortest path calculation to prevent 360-degree snap spins
-        let diff = (rawHeading - smoothedHeading + 180) % 360 - 180;
-        diff = diff < -180 ? diff + 360 : diff;
-
-        if (Math.abs(diff) > COMPASS_THRESHOLD) {
-            // Apply Low-Pass Filter
-            smoothedHeading = (smoothedHeading + diff * COMPASS_ALPHA + 360) % 360;
-
-            // Always rotate the blue marker cone
-            mapManager.updateUserHeading(smoothedHeading);
-
-            // If active, dynamically rotate the entire map canvas
-            if (mapManager.trackingMode === 'heading-up') {
-                mapManager.map.jumpTo({ bearing: smoothedHeading });
-            }
-        }
-    }
-}
 
 function init() {
     setupEventListeners();
@@ -251,9 +255,6 @@ function init() {
             (pos) => {
                 const lat = pos.coords.latitude;
                 const lng = pos.coords.longitude;
-                
-                // 1. Drop the blue dot on their current location
-                mapManager.updateLivePosition(lat, lng);
                 
                 // 2. Fly the camera smoothly to their location
                 mapManager.map.flyTo({
@@ -324,32 +325,29 @@ function setupEventListeners() {
         els.btnMyLoc.style.color = "var(--text-primary)";
     });
 
-    // BUTTON A: GPS Location (Only handles centering the user)
-els.btnMyLoc.addEventListener('click', () => {
-    // Start GPS if it isn't running
-    if (!state.start || state.start.label !== "Live Tracking...") {
+    // CLEANED: Single-use GPS fetch to populate the Start field
+    els.btnMyLoc.addEventListener('click', () => {
         els.inputStart.value = "Locating...";
+        
         navigator.geolocation.getCurrentPosition(
-            (pos) => updateLocation('start', { lat: pos.coords.latitude, lng: pos.coords.longitude, label: 'Live Tracking...' }),
-            (err) => { els.inputStart.value = state.start ? state.start.label : ""; },
+            (pos) => {
+                const lat = pos.coords.latitude;
+                const lng = pos.coords.longitude;
+                
+                // This drops the standard blue Start pin and calculates if an End pin exists
+                updateLocation('start', { lat, lng, label: 'Current Location' });
+                
+                // Gently pan the map to their location
+                mapManager.map.flyTo({ center: [lng, lat], zoom: 16 });
+            },
+            (err) => {
+                console.warn("Location error:", err);
+                els.inputStart.value = state.start ? state.start.label : "";
+                alert("Unable to retrieve location. Please check your browser permissions.");
+            },
             { enableHighAccuracy: true }
         );
-    }
-
-    if (!mapManager.watchId && navigator.geolocation) {
-        mapManager.watchId = navigator.geolocation.watchPosition(
-            (pos) => mapManager.updateLivePosition(pos.coords.latitude, pos.coords.longitude),
-            (err) => console.warn(err),
-            { enableHighAccuracy: true, maximumAge: 0 }
-        );
-    }
-
-    // Force map to pan to the current known location
-    if (mapManager.liveMarker) {
-        const lngLat = mapManager.liveMarker.getLngLat();
-        mapManager.map.panTo(lngLat, { duration: 800 });
-    }
-});
+    });
 
 // BUTTON B: Orientation Toggle (Only handles map rotation & permissions)
 if (els.btnOrientation) {
@@ -563,31 +561,32 @@ function updateRouteUI(stats) {
 // Boot up the application
 document.addEventListener('DOMContentLoaded', init);
 
-/**
- * Generates a Google Maps Directions URL using the official API schema.
- */
-function openInGoogleMaps(start, end, geometry) {
-    const coords = geometry.coordinates; // Array of [lng, lat]
+// Forces Google Maps to follow our exact route by dropping breadcrumbs
+function openInGoogleMaps(coords) {
+    // GeoJSON is [lng, lat], Google Maps expects [lat, lng]
+    const origin = `${coords[0][1]},${coords[0][0]}`;
+    const dest = `${coords[coords.length - 1][1]},${coords[coords.length - 1][0]}`;
+
+    // Sample exactly 5 intermediate waypoints evenly spaced along the route
     const waypoints = [];
-    
-    // REDUCE to 2 waypoints. This is usually enough to "bend" Google's route 
-    // to match ours, while drastically reducing the chance of snapping to a POI.
-    const waypointCount = 2; 
+    const numWaypoints = 5;
     
     if (coords.length > 10) {
-        const step = Math.floor(coords.length / (waypointCount + 1));
-        for(let i = 1; i <= waypointCount; i++) {
+        const step = Math.floor(coords.length / (numWaypoints + 1));
+        for (let i = 1; i <= numWaypoints; i++) {
             const pt = coords[i * step];
-            // Google Maps format: lat,lng
-            waypoints.push(`${pt[1]},${pt[0]}`);
+            waypoints.push(`${pt[1]},${pt[0]}`); // Flip to lat,lng
         }
     }
-
-    const wpString = waypoints.length > 0 ? `&waypoints=${waypoints.join('|')}` : '';
     
-    // Use the official cross-platform Google Maps intent URL
-    const gmapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${start.lat},${start.lng}&destination=${end.lat},${end.lng}${wpString}&travelmode=walking`;
+    // Construct the universal Google Maps Intent URL
+    let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${dest}&travelmode=walking&dir_action=navigate`;
     
-    // Open in new tab (triggers native app)
-    window.open(gmapsUrl, '_blank');
+    if (waypoints.length > 0) {
+        // Waypoints must be separated by the | character
+        url += `&waypoints=${waypoints.join('|')}`;
+    }
+    
+    // Opens the Google Maps App on mobile, or a new tab on desktop
+    window.open(url, '_blank');
 }
