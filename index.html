@@ -32,80 +32,38 @@
     </div>
     <!-- Theme Toggle Button -->
     <button id="btn-theme" class="theme-toggle-btn">🌓</button>
-
-    <!-- NEW: Dedicated Orientation Toggle -->
-    <button id="btn-orientation" class="theme-toggle-btn" style="top: 204px;">
-        <!-- Default: North-Up Icon -->
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="16"></line>
-            <line x1="8" y1="12" x2="16" y2="12"></line>
-        </svg>
-    </button>
     
 
-    <div id="bottom-sheet" class="bottom-sheet hidden">
-        <div id="sheet-toggle" class="handle-zone" title="Tap to toggle">
-            <div class="drag-handle"></div>
-        </div>
+    <!-- Bottom Sheet -->
+    <div id="bottom-sheet" class="bottom-sheet collapsed">
+        <div class="handle-zone" id="sheet-toggle"><div class="drag-handle"></div></div>
+        
         <div class="sheet-content">
-            <div id="loading-state" class="hidden">
-                <p>Analyzing route and elevation data...</p>
+            <!-- Global Context Bar -->
+            <div id="global-context" class="global-context-bar hidden">
+                <span id="weather-icon">🌤</span>
+                <span id="weather-text">Loading weather...</span>
             </div>
-            
-            <div id="route-details" class="hidden">
-                <div class="section-card">
-                    <h3>About Your Route</h3>
-                    <p id="ui-about-route" class="summary-text">--</p>
-                    
-                    <div class="time-breakdown">
-                        <h4>Time Breakdown Estimate</h4>
-                        <div class="breakdown-row">
-                            <span>Flat-ground estimate:</span>
-                            <span id="bd-base">-- min</span>
-                        </div>
-                        <div class="breakdown-row">
-                            <span>Elevation adjustment:</span>
-                            <span id="bd-elev" class="penalty">-- min</span>
-                        </div>
-                        <div class="breakdown-row">
-                            <span>Sustained climbing adjustment:</span>
-                            <span id="bd-climb" class="penalty">-- min</span>
-                        </div>
-                        <div class="breakdown-row">
-                            <span>Gentle downhill recovery:</span>
-                            <span id="bd-recovery" class="bonus">-- min</span>
-                        </div>
-                        <div class="breakdown-row">
-                            <span>Fatigue adjustment:</span>
-                            <span id="bd-fatigue" class="penalty">-- min</span>
-                        </div>
-                        <div class="breakdown-row total-row">
-                            <span>Final walking estimate:</span>
-                            <span id="bd-total">-- min</span>
-                        </div>
-                    </div>
-                    
-                    <p class="confidence-note">
-                        <strong>Note on Confidence:</strong> This estimate is generated using physiological heuristics (based on Tobler and Naismith models). It assumes an average healthy adult under normal conditions. Factors such as weather, individual fitness, terrain surface, and carried load will affect actual travel time.
-                    </p>
-                </div>
 
-                <div class="section-card">
-                    <h3>Estimated Calories Burned</h3>
-                    <p class="calories-val">≈ <span id="ui-calories">--</span> kcal</p>
-                    <p class="disclaimer">*Estimated using average adult body weight (70kg) and calculated walking intensity based on terrain grade. Actual values will vary.</p>
-                </div>
-                <div class="action-container">
-                    <button id="btn-gmaps" class="primary-btn">
-                        <span class="btn-icon">🧭</span> Start Live Navigation
-                    </button>
-                    <p class="gmaps-note">Opens in Google Maps app</p>
-                </div>
+            <!-- The 3 Route Options -->
+            <div id="route-options-container" class="route-list">
+                <!-- JavaScript will inject the 3 route cards here -->
             </div>
-            
-            <div id="error-state" class="hidden">
-                <p id="ui-error-message">Unable to calculate route.</p>
+
+            <!-- Route Details (Hidden by default, shown for the selected route) -->
+            <div id="route-details" class="route-details hidden">
+                <!-- You can keep your existing grid-stats here for advanced users -->
+                <div class="grid-stats">
+                    <div class="stat-box">
+                        <span class="stat-label">Ascent</span>
+                        <span class="stat-value ascent" id="ui-ascent">0 m</span>
+                    </div>
+                    <div class="stat-box">
+                        <span class="stat-label">Descent</span>
+                        <span class="stat-value descent" id="ui-descent">0 m</span>
+                    </div>
+                </div>
+                <button class="primary-btn" id="btn-start-nav">Start Walking</button>
             </div>
         </div>
     </div>
