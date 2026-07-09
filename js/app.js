@@ -38,35 +38,66 @@ const els = {
 // 1. Add this variable near the top of app.js (under state and els)
 let currentRouteController = null;
 
-// Add this helper function to generate the literal impact statements
-function generateImpactStatement(route, fastestRoute, weather) {
-    const isRainy = weather && weather.rain > 0;
-    const isHot = weather && weather.feelsLike > 33;
+// Data-driven, concise insights
+function generateSmartImpact(route, fastestRoute, weather) {
     const timeDiff = Math.round(route.stats.finalTimeMin - fastestRoute.stats.finalTimeMin);
+    const savedClimb = Math.round(fastestRoute.stats.ascentMeters - route.stats.ascentMeters);
+    const penalties = Math.round(route.stats.breakdown.elevPenaltyMin + route.stats.breakdown.climbPenaltyMin);
     
-    if (isRainy) {
-        if (route.label === "Fastest") return "Recommended. Shortest time exposed to rain.";
-        return `Not recommended. Adds ${timeDiff} minutes of rain exposure.`;
-    }
-    
-    if (isHot) {
-        if (route.label === "Fastest" && route.stats.ascentMeters > 20) {
-            return "Quickest route, but includes a steep climb in high heat.";
+    const isRain = weather && weather.rain > 0;
+    const isHot = weather && weather.feelsLike > 33;
+    const hasHills = route.stats.ascentMeters > 15;
+
+    // --- RAIN LOGIC (Exposure is the only thing that matters) ---
+    if (isRain) {
+        if (route.label === "Fastest") {
+            return hasHills 
+                ? `Shortest exposure to the rain. The ${Math.round(route.stats.ascentMeters)}m climb is worth it to get to shelter faster.`
+                : `Quickest direct path. Minimizes your time out in the rain.`;
         }
-        if (route.label === "Flattest") {
-            return `Adds ${timeDiff} minutes, but avoids hills to reduce physical strain in the heat.`;
-        }
+        return `Not recommended. Bypasses some terrain, but keeps you in the rain for an extra ${timeDiff} minutes.`;
     }
 
-    // Default statements if weather is normal
-    if (route.label === "Fastest") return "Quickest direct path.";
-    if (route.label === "Flattest") return `Adds ${timeDiff} minutes for a flatter, easier walk.`;
-    return `Secondary route. Adds ${timeDiff} minutes.`;
+    // --- HEAT LOGIC (Effort = Sweat) ---
+    if (isHot) {
+        if (route.label === "Fastest") {
+            return hasHills 
+                ? `Quickest, but tackling a ${Math.round(route.stats.ascentMeters)}m climb in ${weather.feelsLike}°C heat requires serious effort. You will sweat.`
+                : `Quickest direct path to get out of the heat. Mostly flat.`;
+        }
+        if (route.label === "Flattest" && savedClimb > 10) {
+            return `Adds ${timeDiff} mins, but saving ${savedClimb}m of climbing keeps your heart rate down in this heat.`;
+        }
+        return `Adds ${timeDiff} mins to your walk with no significant elevation relief.`;
+    }
+
+    // --- NORMAL WEATHER LOGIC (Focus on physical penalties) ---
+    if (route.label === "Fastest") {
+        return penalties > 1
+            ? `Most direct route, though steep grades will add ~${penalties} minutes of fatigue penalty to your pace.`
+            : `Quickest route. Relatively flat with minimal terrain slowing you down.`;
+    }
+    
+    if (route.label === "Flattest") {
+        return `Takes ${timeDiff} mins longer, but avoiding the hills allows for a much more relaxed, steady baseline pace.`;
+    }
+
+    return `Secondary route. Adds ${timeDiff} mins and ${Math.round(route.stats.ascentMeters)}m of climbing compared to the fastest path.`;
 }
 
 // Update your route calculation flow
 async function calculateRoute() {
-    if (!state.start || !state.end) return;
+    // STRICT GUARD: Refuse to calculate unless both points exist AND possess valid numeric coordinates
+    if (
+        !state.start || 
+        !state.end || 
+        typeof state.start.lat !== 'number' || 
+        typeof state.start.lng !== 'number' || 
+        typeof state.end.lat !== 'number' || 
+        typeof state.end.lng !== 'number'
+    ) {
+        return; // Silently abort the calculation
+    }
 
     try {
         // 1. Fetch Route and Weather in parallel
@@ -159,35 +190,48 @@ function renderRouteUI(routes, weather) {
         const card = document.createElement('div');
         card.className = `route-card ${index === 0 ? 'selected' : ''}`;
         
-        const timeStr = formatTime(route.stats.finalTimeMin); // Your existing formatter
+        const timeStr = formatTime(route.stats.finalTimeMin);
         const distStr = `${route.stats.distanceKm.toFixed(2)} km`;
-        const impact = generateImpactStatement(route, fastestRoute, weather);
+        const ascStr = `↗ ${Math.round(route.stats.ascentMeters)}m`;
+        
+        // NEW: Grab the calories directly from your advanced calculator
+        const calStr = `🔥 ${Math.round(route.stats.calories)} kcal`; 
+        
+        const icon = route.label === "Fastest" ? "⚡️ " : (route.label === "Flattest" ? "😌 " : "🔀 ");
+        let diffColor = "#10b981"; // Easy (Green)
+        if (route.stats.difficulty === "Moderate") diffColor = "#f59e0b"; // Orange
+        if (route.stats.difficulty === "Hard") diffColor = "#ef4444"; // Red
 
+        const impact = generateSmartImpact(route, fastestRoute, weather);
+
+        // Inject the calories into the metrics line
         card.innerHTML = `
             <div class="route-header">
-                <span class="route-title">${route.label}</span>
-                <span class="route-metrics">${timeStr} • ${distStr}</span>
+                <span class="route-title">${icon}${route.label}</span>
+                <span class="badge" style="background-color: ${diffColor}20; color: ${diffColor};">${route.stats.difficulty}</span>
+            </div>
+            <div class="route-metrics" style="margin-bottom: 6px;">
+                ${timeStr} • ${distStr} • ${ascStr} • ${calStr}
             </div>
             <div class="route-impact">${impact}</div>
         `;
 
-        // Add Click Listener to swap routes
+        // Add Click Listener
         card.addEventListener('click', () => {
             document.querySelectorAll('.route-card').forEach(c => c.classList.remove('selected'));
             card.classList.add('selected');
             
             mapManager.drawRoute(route.geometry);
-            
-            // 2. Update the active coordinates when a user taps a different card
             activeRouteCoords = route.geometry.coordinates;
             
-            document.getElementById('ui-ascent').textContent = `${Math.round(route.stats.ascentMeters)} m`;
-            document.getElementById('ui-descent').textContent = `${Math.round(route.stats.descentMeters)} m`;
+            // Note: We deleted the ui-ascent/ui-descent DOM updates from here!
             document.getElementById('route-details').classList.remove('hidden');
         });
 
         container.appendChild(card);
     });
+
+    // Note: Also delete the ui-ascent/ui-descent DOM updates that were sitting outside the loop!
 
     const btnStartNav = document.getElementById('btn-start-nav');
 
@@ -196,8 +240,8 @@ function renderRouteUI(routes, weather) {
     };
 
     // Populate initial nerd stats for the default route
-    document.getElementById('ui-ascent').textContent = `${Math.round(routes[0].stats.ascentMeters)} m`;
-    document.getElementById('ui-descent').textContent = `${Math.round(routes[0].stats.descentMeters)} m`;
+    // document.getElementById('ui-ascent').textContent = `${Math.round(routes[0].stats.ascentMeters)} m`;
+    // document.getElementById('ui-descent').textContent = `${Math.round(routes[0].stats.descentMeters)} m`;
     document.getElementById('route-details').classList.remove('hidden');
 
     sheet.classList.remove('collapsed');
