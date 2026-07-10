@@ -39,6 +39,14 @@
         <div class="handle-zone" id="sheet-toggle"><div class="drag-handle"></div></div>
         
         <div class="sheet-content">
+
+            <!-- Status / Loading / Idle State -->
+            <div id="status-state" class="status-state">
+                <!-- Spinner hidden by default on load -->
+                <div id="status-spinner" class="spinner" style="display: none;"></div>
+                <p id="status-text">Set a destination to start your search.</p>
+            </div>
+
             <!-- Global Context Bar -->
             <div id="global-context" class="global-context-bar hidden">
                 <span id="weather-icon">🌤</span>

@@ -2,6 +2,50 @@ import { MapManager } from './map.js';
 import { geocodeSearch, getRoute, getWeather } from './api.js';
 import { analyzeTerrainRoute } from './calculator.js';
 
+// --- Status Manager ---
+function setAppStatus(message, isError = false) {
+    const sheet = document.getElementById('bottom-sheet');
+    const statusState = document.getElementById('status-state');
+    const statusText = document.getElementById('status-text');
+    const spinner = document.getElementById('status-spinner');
+    
+    // Hide the actual content
+    document.getElementById('global-context').classList.add('hidden');
+    document.getElementById('route-options-container').classList.add('hidden');
+    document.getElementById('route-details').classList.add('hidden');
+
+    // Show the status state
+    sheet.classList.remove('collapsed');
+    statusState.classList.remove('hidden');
+    
+    statusText.textContent = message;
+    spinner.style.display = isError ? 'none' : 'block';
+}
+
+// --- Idle Placeholder State ---
+function setIdleState() {
+    const sheet = document.getElementById('bottom-sheet');
+    const statusState = document.getElementById('status-state');
+    const statusText = document.getElementById('status-text');
+    const spinner = document.getElementById('status-spinner');
+    
+    // 1. Hide the routing UI
+    document.getElementById('global-context').classList.add('hidden');
+    document.getElementById('route-options-container').classList.add('hidden');
+    document.getElementById('route-details').classList.add('hidden');
+
+    // 2. Show the idle text, hide the spinner
+    statusState.classList.remove('hidden');
+    spinner.style.display = 'none';
+    statusText.textContent = "Set a destination to start your search.";
+    
+    // 3. REMOVE the collapsed class so the text is actually visible!
+    sheet.classList.remove('collapsed');
+    
+    // (Optional) Remove the hidden class in case it was applied earlier
+    sheet.classList.remove('hidden'); 
+}
+
 document.body.classList.add('dark-theme'); // Dark mode by default!
 
 // Application State
@@ -85,9 +129,7 @@ function generateSmartImpact(route, fastestRoute, weather) {
     return `Secondary route. Adds ${timeDiff} mins and ${Math.round(route.stats.ascentMeters)}m of climbing compared to the fastest path.`;
 }
 
-// Update your route calculation flow
 async function calculateRoute() {
-    // STRICT GUARD: Refuse to calculate unless both points exist AND possess valid numeric coordinates
     if (
         !state.start || 
         !state.end || 
@@ -96,47 +138,53 @@ async function calculateRoute() {
         typeof state.end.lat !== 'number' || 
         typeof state.end.lng !== 'number'
     ) {
-        return; // Silently abort the calculation
+        return; 
     }
 
+    // 1. Check for basic internet connection first
+    if (!navigator.onLine) {
+        setAppStatus("No network connection. Please check your data.", true);
+        return;
+    }
+
+    // 2. Take over the UI immediately
+    setAppStatus("Fetching route geometry and weather...");
+
     try {
-        // 1. Fetch Route and Weather in parallel
         const [routeData, weatherData] = await Promise.all([
             getRoute(state.start, state.end),
             getWeather(state.start.lat, state.start.lng)
         ]);
+        
+        if (!routeData || !routeData.features || routeData.features.length === 0) {
+            setAppStatus("No pedestrian routes found for this area.", true);
+            return;
+        }
 
-        // 2. Process all returned routes through your advanced calculator
+        // Optional UX trick: If you want to show that it's doing math, you can update the text here 
+        // setAppStatus("Analyzing 3D terrain...");
+
         let processedRoutes = routeData.features.map(feature => {
-            
-            // A. Safely map ORS coordinates [lng, lat, elevation] into the {lat, lng, elevation} format your calculator expects.
-            // The `c[2] || 0` is the magic shield that stops the NaN crashes!
             const elevationData = feature.geometry.coordinates.map(c => ({
                 lng: c[0],
                 lat: c[1],
                 elevation: c[2] || 0 
             }));
-
-            // B. ORS gives us the total distance out-of-the-box in the properties
             const totalDistanceMeters = feature.properties.summary.distance;
 
-            // C. Run your advanced engine
             return {
                 geometry: feature.geometry,
                 stats: analyzeTerrainRoute(elevationData, totalDistanceMeters)
             };
         });
 
-        // 3. Sort by Time to find the Fastest
         processedRoutes.sort((a, b) => a.stats.finalTimeMin - b.stats.finalTimeMin);
         processedRoutes[0].label = "Fastest";
 
-        // 4. Identify Flattest & Alternative among the remaining
         if (processedRoutes.length > 1) {
             const remaining = processedRoutes.slice(1);
             remaining.sort((a, b) => a.stats.ascentMeters - b.stats.ascentMeters);
             
-            // If the 2nd route actually has significantly less ascent than the fastest, call it Flattest
             if (remaining[0].stats.ascentMeters < processedRoutes[0].stats.ascentMeters - 10) {
                 remaining[0].label = "Flattest";
                 if (remaining[1]) remaining[1].label = "Alternative";
@@ -146,14 +194,16 @@ async function calculateRoute() {
             }
         }
 
-        // 5. Update the UI
-        renderRouteUI(processedRoutes, weatherData);
+        // 3. Clear the loading state and render the actual UI
+        document.getElementById('status-state').classList.add('hidden');
+        document.getElementById('route-options-container').classList.remove('hidden');
         
-        // 6. Draw the fastest route on the map by default
+        renderRouteUI(processedRoutes, weatherData);
         mapManager.drawRoute(processedRoutes[0].geometry);
 
     } catch (err) {
         console.error("Routing error:", err);
+        setAppStatus("Unable to calculate route. Try dropping a closer pin.", true);
     }
 }
 
@@ -315,6 +365,9 @@ function init() {
             { enableHighAccuracy: true, timeout: 5000 }
         );
     }
+
+    // Initialize the app state
+    setIdleState();
 }
 
 // Helper function for iOS Compass Permission
@@ -332,6 +385,15 @@ async function requestCompassPermission() {
 }
 
 function setupEventListeners() {
+
+    els.inputEnd.addEventListener('input', (e) => {
+        if (e.target.value.trim() === '') {
+            state.end = null;
+            mapManager.clearMarker('end');
+            mapManager.clearRoute();
+            setIdleState(); // Revert to the placeholder!
+        }
+    });
 
     // Toggle Light/Dark Mode
     if (els.btnTheme) {
