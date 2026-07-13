@@ -1,23 +1,42 @@
-# Pedestrian Decision Engine
+### Pedestrian Decision Engine
 
-A mobile-first, highly utilitarian web application that calculates the physical toll of walking. 
+A mobile-first web tool built to answer one question: **Should I walk this route right now, or should I take a ride?**
 
-Unlike standard car-centric navigation apps, this engine treats the user as a human who feels gravity and heat. It evaluates 3D terrain and real-time weather to answer one simple question: *"Should I walk this, or should I get a ride?"*
+It evaluates 3D terrain and real-time weather to estimate the physical toll of a walk.
 
-## ⚡️ The Philosophy: "The Casio Watch"
-This app is built for speed, objectivity, and zero bloat. No live-tracking background processes, no forced account creation, and no gimmicky social features. It does exactly one thing: calculates the reality of the walk you are about to take.
+## What It Does
 
-## 🌟 Core Features
+* **Calculates Physical Impact:** Uses Tobler's Hiking Function and Naismith's Rule to factor slopes and the WMO weather index (heat/rain) into estimated travel time and METs (calories burned).
+* **Filters Route Alternatives:** Displays up to three route archetypes (Fastest vs. Flattest). It automatically filters out detours that exceed the fastest route by more than 40% or 1.0 km.
+* **Provides a Decision Threshold:** If a routed path is more than 3x longer than the straight-line physical distance (and over 1.5 km), it halts calculation and suggests getting a ride.
 
-* **Physiological Routing:** Calculates walking time and calorie burn (METs) using a 3D Haversine distance formula, modified **Tobler's Hiking Function**, and Naismith’s Rule for sustained climbs.
-* **Environmental Context:** Fetches hyper-local, real-time weather (precipitation and "feels like" heat index) to generate a "Smart Impact" verdict on how the weather multiplies the physical effort.
-* **Objective Route Archetypes:** Forces the routing engine to compare up to 3 paths, automatically identifying the absolute *Fastest* and the *Flattest* options to give the user physical autonomy.
-* **Seamless Google Maps Handoff:** Extracts geographic waypoints from the chosen route and seamlessly passes them into the native Google Maps app for reliable turn-by-turn voice navigation.
+## Limitations
 
-## 🛠 Tech Stack
+* **No Turn-by-Turn Navigation:** It does not track location live or give voice prompts. It passes coordinates to Google Maps via a "Start Walking" button for actual navigation. *(Honestly, this handoff is our best feature anyway because Google's street data handles broken local intersections better than we can).*
+* **No Live Flood Tracking:** It reads live rainfall volume and weather codes, but cannot detect standing water on the ground.
+* **OpenStreetMap Dependency:** Relies on OpenRouteService (OSM data). If a local alleyway (*esquinita*) or gate is tagged as an impassable barrier in OSM, the engine will route around it. *(If the app gives you a wildly winding detour for a street you know is open, this is usually why).*
 
-* **Frontend:** Pure Vanilla HTML / CSS / JavaScript (Zero framework bloat)
-* **Map Renderer:** [MapLibre GL JS](https://maplibre.org/)
-* **Map Tiles:** [MapTiler](https://www.maptiler.com/) (Dark/Light mode streets)
-* **Routing Engine:** [OpenRouteService API](https://openrouteservice.org/) (Foot-walking profile with GeoJSON elevation geometry)
-* **Weather Data:** [Open-Meteo API](https://open-meteo.com/) (No API key required)
+## The Code
+
+This project is completely vibe-coded. It wasn't built from a strict architectural blueprint; it was written conversationally—tweaking parameters on the fly, fixing quirks as they broke, and handling map API limitations manually until the outputs felt right for an actual walk. It is vanilla HTML, CSS, and JS held together by utilitarian intent.
+
+## Tech Stack
+
+* **Map Canvas:** MapLibre GL JS + MapTiler (Styles)
+* **Routing Brain:** OpenRouteService API (`foot-walking` profile with relaxed `share_factor` constraints)
+* **Weather Brain:** Open-Meteo API (`weather_code` categorical tracking)
+
+## Setup
+
+1. Clone the repo.
+2. Create a `js/config.js` file based on the template below to securely store your credentials:
+```javascript
+export const CONFIG = {
+    MAPTILER_KEY: "YOUR_MAPTILER_API_KEY",
+    OPENROUTESERVICE_KEY: "YOUR_OPENROUTESERVICE_API_KEY"
+};
+
+```
+
+
+3. Run a local server (`python3 -m http.server 8000`) and open it in your browser.
