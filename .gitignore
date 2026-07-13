@@ -1,0 +1,10 @@
+# Credentials & Environment Config
+js/config.js
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+
+# Optional: Local Server or Dependency Cache logs
+*.log
+.vscode/
